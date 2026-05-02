@@ -15,6 +15,7 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SQLite = "0aa819cd-b072-5ff4-a722-6bc24af294d9"
 Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
 
 [compat]
 DBInterface = "2.6.1"
@@ -28,3 +29,4 @@ Random = "1.11.0"
 SQLite = "1.8.0"
 Sockets = "1.11.0"
 Statistics = "1.11.1"
+UUIDs = "1.11.0"

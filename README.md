@@ -44,6 +44,11 @@ The app reads `/home/micu/julia/.env` through systemd.
 - `MAX_QUEUED_JOBS=50`
 
 `.env` is intentionally ignored by Git.
+Keep it owner-readable only:
+
+```bash
+chmod 600 /home/micu/julia/.env
+```
 
 ## Service And Proxy
 
@@ -78,7 +83,7 @@ The app reads `/home/micu/julia/.env` through systemd.
 - `POST /api/benchmark/random-walk`
 - `POST /api/benchmark/dataframe`
 
-Benchmark `POST` endpoints create an asynchronous job and return `202` with a `job_id` and `poll_url`. The result is available through `GET /api/jobs/:id`.
+Benchmark `POST` endpoints create an asynchronous job and return `202` with a UUID `job_id`, a `job_token`, and a `poll_url`. `GET /api/jobs` returns summary-only data. Full job details are available through `GET /api/jobs/:id` only when the request includes `X-Job-Token: <job_token>`.
 
 ## Deployment Notes
 

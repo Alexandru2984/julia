@@ -2,12 +2,16 @@ using Dates
 using DBInterface
 using JSON3
 using LibPQ
+using Random
 using SQLite
+using UUIDs
 
 const DATA_DIR = joinpath(dirname(@__DIR__), "data")
 const DB_PATH = joinpath(DATA_DIR, "runs.sqlite3")
 
 utc_timestamp() = Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sss") * "Z"
+new_public_id() = string(uuid4())
+new_access_token() = randstring(48)
 
 function storage_backend()
     return isempty(get(ENV, "DATABASE_URL", "")) ? :sqlite : :postgres
@@ -66,6 +70,8 @@ function init_storage!()
             DBInterface.execute(database, """
                 CREATE TABLE IF NOT EXISTS benchmark_jobs (
                     id BIGSERIAL PRIMARY KEY,
+                    public_id TEXT,
+                    access_token TEXT,
                     benchmark_type TEXT NOT NULL,
                     status TEXT NOT NULL,
                     input_json TEXT NOT NULL,
@@ -82,6 +88,9 @@ function init_storage!()
                 CREATE INDEX IF NOT EXISTS idx_benchmark_jobs_status_created_at
                 ON benchmark_jobs(status, created_at DESC)
             """)
+            DBInterface.execute(database, "ALTER TABLE benchmark_jobs ADD COLUMN IF NOT EXISTS public_id TEXT")
+            DBInterface.execute(database, "ALTER TABLE benchmark_jobs ADD COLUMN IF NOT EXISTS access_token TEXT")
+            DBInterface.execute(database, "CREATE UNIQUE INDEX IF NOT EXISTS idx_benchmark_jobs_public_id ON benchmark_jobs(public_id)")
         else
             DBInterface.execute(database, """
                 CREATE TABLE IF NOT EXISTS benchmark_runs (
@@ -100,6 +109,8 @@ function init_storage!()
             DBInterface.execute(database, """
                 CREATE TABLE IF NOT EXISTS benchmark_jobs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    public_id TEXT,
+                    access_token TEXT,
                     benchmark_type TEXT NOT NULL,
                     status TEXT NOT NULL,
                     input_json TEXT NOT NULL,
@@ -116,10 +127,49 @@ function init_storage!()
                 CREATE INDEX IF NOT EXISTS idx_benchmark_jobs_status_created_at
                 ON benchmark_jobs(status, created_at DESC)
             """)
+            add_sqlite_column_if_missing!(database, "benchmark_jobs", "public_id", "TEXT")
+            add_sqlite_column_if_missing!(database, "benchmark_jobs", "access_token", "TEXT")
+            DBInterface.execute(database, "CREATE UNIQUE INDEX IF NOT EXISTS idx_benchmark_jobs_public_id ON benchmark_jobs(public_id)")
         end
+        backfill_job_access!(database)
         reset_incomplete_jobs!(database)
     finally
         close_db(database)
+    end
+end
+
+function add_sqlite_column_if_missing!(database, table::String, column::String, type::String)
+    columns = Set{String}()
+    for row in DBInterface.execute(database, "PRAGMA table_info($table)")
+        push!(columns, row.name)
+    end
+    if !(column in columns)
+        DBInterface.execute(database, "ALTER TABLE $table ADD COLUMN $column $type")
+    end
+end
+
+function backfill_job_access!(database)
+    result = DBInterface.execute(database, "SELECT id FROM benchmark_jobs WHERE public_id IS NULL OR access_token IS NULL")
+    ids = Int[]
+    for row in result
+        push!(ids, Int(row.id))
+    end
+    for id in ids
+        public_id = new_public_id()
+        access_token = new_access_token()
+        if storage_backend() == :postgres
+            DBInterface.execute(
+                database,
+                "UPDATE benchmark_jobs SET public_id = \$1, access_token = \$2 WHERE id = \$3",
+                (public_id, access_token, id),
+            )
+        else
+            DBInterface.execute(
+                database,
+                "UPDATE benchmark_jobs SET public_id = ?, access_token = ? WHERE id = ?",
+                (public_id, access_token, id),
+            )
+        end
     end
 end
 
@@ -177,6 +227,23 @@ function prune_old_runs!(database)
         DBInterface.execute(
             database,
             "DELETE FROM benchmark_runs WHERE id NOT IN (SELECT id FROM benchmark_runs ORDER BY created_at DESC LIMIT ?)",
+            (keep,),
+        )
+    end
+end
+
+function prune_old_jobs!(database)
+    keep = retention_limit()
+    if storage_backend() == :postgres
+        DBInterface.execute(
+            database,
+            "DELETE FROM benchmark_jobs WHERE id NOT IN (SELECT id FROM benchmark_jobs ORDER BY created_at DESC LIMIT \$1)",
+            (keep,),
+        )
+    else
+        DBInterface.execute(
+            database,
+            "DELETE FROM benchmark_jobs WHERE id NOT IN (SELECT id FROM benchmark_jobs ORDER BY created_at DESC LIMIT ?)",
             (keep,),
         )
     end
@@ -245,26 +312,28 @@ end
 function create_job!(benchmark_type::String, input_json::String, input_size::String)
     active_job_count() < max_queued_jobs() || throw(ArgumentError("Too many benchmark jobs are already queued"))
     created_at = utc_timestamp()
+    public_id = new_public_id()
+    access_token = new_access_token()
     database = db()
     try
         if storage_backend() == :postgres
             result = DBInterface.execute(
                 database,
-                "INSERT INTO benchmark_jobs (benchmark_type, status, input_json, input_size, created_at) VALUES (\$1, 'queued', \$2, \$3, \$4) RETURNING id",
-                (benchmark_type, input_json, input_size, created_at),
+                "INSERT INTO benchmark_jobs (public_id, access_token, benchmark_type, status, input_json, input_size, created_at) VALUES (\$1, \$2, \$3, 'queued', \$4, \$5, \$6) RETURNING id",
+                (public_id, access_token, benchmark_type, input_json, input_size, created_at),
             )
             for row in result
-                return Int(row.id)
+                return Dict("id" => Int(row.id), "public_id" => public_id, "access_token" => access_token)
             end
         else
             DBInterface.execute(
                 database,
-                "INSERT INTO benchmark_jobs (benchmark_type, status, input_json, input_size, created_at) VALUES (?, 'queued', ?, ?, ?)",
-                (benchmark_type, input_json, input_size, created_at),
+                "INSERT INTO benchmark_jobs (public_id, access_token, benchmark_type, status, input_json, input_size, created_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)",
+                (public_id, access_token, benchmark_type, input_json, input_size, created_at),
             )
             result = DBInterface.execute(database, "SELECT last_insert_rowid() AS id")
             for row in result
-                return Int(row.id)
+                return Dict("id" => Int(row.id), "public_id" => public_id, "access_token" => access_token)
             end
         end
     finally
@@ -297,12 +366,14 @@ function complete_job!(job_id::Int, duration_ms::Real, result_json::String)
                 "UPDATE benchmark_jobs SET status = 'done', duration_ms = \$1, result_json = \$2, finished_at = \$3 WHERE id = \$4",
                 (Float64(duration_ms), result_json, finished_at, job_id),
             )
+            prune_old_jobs!(database)
         else
             DBInterface.execute(
                 database,
                 "UPDATE benchmark_jobs SET status = 'done', duration_ms = ?, result_json = ?, finished_at = ? WHERE id = ?",
                 (Float64(duration_ms), result_json, finished_at, job_id),
             )
+            prune_old_jobs!(database)
         end
     finally
         close_db(database)
@@ -320,12 +391,14 @@ function fail_job!(job_id::Int, message::String)
                 "UPDATE benchmark_jobs SET status = 'failed', error_message = \$1, finished_at = \$2 WHERE id = \$3",
                 (safe_message, finished_at, job_id),
             )
+            prune_old_jobs!(database)
         else
             DBInterface.execute(
                 database,
                 "UPDATE benchmark_jobs SET status = 'failed', error_message = ?, finished_at = ? WHERE id = ?",
                 (safe_message, finished_at, job_id),
             )
+            prune_old_jobs!(database)
         end
     finally
         close_db(database)
@@ -341,7 +414,7 @@ end
 
 function job_to_dict(row)
     return Dict(
-        "id" => Int(row.id),
+        "id" => row.public_id,
         "benchmark_type" => row.benchmark_type,
         "status" => row.status,
         "input" => parse_stored_json(row.input_json),
@@ -355,20 +428,35 @@ function job_to_dict(row)
     )
 end
 
-function get_job(job_id::Int)
+function job_summary_to_dict(row)
+    public_id = String(row.public_id)
+    return Dict(
+        "id" => public_id,
+        "label" => first(public_id, 8),
+        "benchmark_type" => row.benchmark_type,
+        "status" => row.status,
+        "input_size" => row.input_size,
+        "duration_ms" => (row.duration_ms === missing || row.duration_ms === nothing) ? nothing : round(row.duration_ms; digits = 3),
+        "created_at" => row.created_at,
+        "started_at" => (row.started_at === missing ? nothing : row.started_at),
+        "finished_at" => (row.finished_at === missing ? nothing : row.finished_at),
+    )
+end
+
+function get_job(public_id::String, access_token::String)
     database = db()
     try
         result = if storage_backend() == :postgres
             DBInterface.execute(
                 database,
-                "SELECT id, benchmark_type, status, input_json, input_size, duration_ms, result_json, error_message, created_at, started_at, finished_at FROM benchmark_jobs WHERE id = \$1",
-                (job_id,),
+                "SELECT public_id, benchmark_type, status, input_json, input_size, duration_ms, result_json, error_message, created_at, started_at, finished_at FROM benchmark_jobs WHERE public_id = \$1 AND access_token = \$2",
+                (public_id, access_token),
             )
         else
             DBInterface.execute(
                 database,
-                "SELECT id, benchmark_type, status, input_json, input_size, duration_ms, result_json, error_message, created_at, started_at, finished_at FROM benchmark_jobs WHERE id = ?",
-                (job_id,),
+                "SELECT public_id, benchmark_type, status, input_json, input_size, duration_ms, result_json, error_message, created_at, started_at, finished_at FROM benchmark_jobs WHERE public_id = ? AND access_token = ?",
+                (public_id, access_token),
             )
         end
         for row in result
@@ -388,18 +476,18 @@ function recent_jobs(limit::Int = 20)
         result = if storage_backend() == :postgres
             DBInterface.execute(
                 database,
-                "SELECT id, benchmark_type, status, input_json, input_size, duration_ms, result_json, error_message, created_at, started_at, finished_at FROM benchmark_jobs ORDER BY created_at DESC LIMIT \$1",
+                "SELECT public_id, benchmark_type, status, input_size, duration_ms, created_at, started_at, finished_at FROM benchmark_jobs ORDER BY created_at DESC LIMIT \$1",
                 (safe_limit,),
             )
         else
             DBInterface.execute(
                 database,
-                "SELECT id, benchmark_type, status, input_json, input_size, duration_ms, result_json, error_message, created_at, started_at, finished_at FROM benchmark_jobs ORDER BY created_at DESC LIMIT ?",
+                "SELECT public_id, benchmark_type, status, input_size, duration_ms, created_at, started_at, finished_at FROM benchmark_jobs ORDER BY created_at DESC LIMIT ?",
                 (safe_limit,),
             )
         end
         for row in result
-            push!(rows, job_to_dict(row))
+            push!(rows, job_summary_to_dict(row))
         end
     finally
         close_db(database)

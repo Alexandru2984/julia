@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "4a87edc1d7cb66dfdc9f9d2e20b6329a16d36cdf"
+project_hash = "c8faa9f5abad416677017a973579e17bebd4eced"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -207,7 +207,7 @@ weakdeps = ["ArrowTypes"]
     JSON3ArrowExt = ["ArrowTypes"]
 
 [[deps.JuliaScientificBenchmarkLab]]
-deps = ["DBInterface", "DataFrames", "Dates", "HTTP", "JSON3", "LinearAlgebra", "Random", "SQLite", "Sockets", "Statistics"]
+deps = ["DBInterface", "DataFrames", "Dates", "HTTP", "JSON3", "LibPQ", "LinearAlgebra", "Random", "SQLite", "Sockets", "Statistics"]
 path = "."
 uuid = "264e8aa2-3c46-4f7d-8c13-399876d83628"
 version = "0.1.0"

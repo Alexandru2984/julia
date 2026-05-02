@@ -4,6 +4,9 @@ set -euo pipefail
 cd /home/micu/julia
 source .env
 
+echo "Checking environment file permissions..."
+test "$(stat -c '%a' .env)" = "600"
+
 echo "Checking local health endpoint..."
 for _ in $(seq 1 20); do
   if curl -fsS "http://127.0.0.1:${APP_PORT}/health" >/dev/null 2>&1; then

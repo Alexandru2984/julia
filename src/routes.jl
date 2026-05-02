@@ -106,7 +106,11 @@ end
 function parse_body(req::HTTP.Request)
     length(req.body) <= MAX_BODY_BYTES || throw(ArgumentError("Request body is too large"))
     isempty(req.body) && return Dict{String, Any}()
-    parsed = JSON3.read(String(req.body), Dict{String, Any})
+    parsed = try
+        JSON3.read(String(req.body), Dict{String, Any})
+    catch
+        throw(ArgumentError("Invalid JSON payload"))
+    end
     return parsed
 end
 
@@ -116,20 +120,21 @@ function with_benchmark(handler, validator, benchmark_type::String, input_summar
             payload = parse_body(req)
             params = validator(payload)
             input_size = input_summary(params)
-            job_id = create_job!(
+            job = create_job!(
                 benchmark_type,
                 JSON3.write(params_to_dict(params)),
                 input_size,
             )
-            start_benchmark_job!(job_id, handler, params, benchmark_type, input_size)
+            start_benchmark_job!(job["id"], handler, params, benchmark_type, input_size)
             return json_response(Dict(
-                "job_id" => job_id,
+                "job_id" => job["public_id"],
+                "job_token" => job["access_token"],
                 "status" => "queued",
-                "poll_url" => "/api/jobs/$job_id",
+                "poll_url" => "/api/jobs/$(job["public_id"])",
             ); status = 202)
         catch err
             if err isa ArgumentError
-                return json_response(Dict("error" => sprint(showerror, err)); status = 400)
+                return json_response(Dict("error" => err.msg); status = 400)
             end
             @error "Benchmark request failed" exception = (err, catch_backtrace())
             return json_response(Dict("error" => "Benchmark failed"); status = 500)
@@ -182,10 +187,12 @@ const HANDLERS = Dict{Tuple{String, String}, Function}(
     ),
 )
 
-function job_response(path::AbstractString)
+function job_response(req::HTTP.Request, path::AbstractString)
     id_text = replace(path, "/api/jobs/" => ""; count = 1)
-    !isempty(id_text) && all(isdigit, id_text) || return json_response(Dict("error" => "Not found"); status = 404)
-    job = get_job(parse(Int, id_text))
+    !isempty(id_text) && length(id_text) <= 80 || return json_response(Dict("error" => "Not found"); status = 404)
+    access_token = String(HTTP.header(req, "X-Job-Token", ""))
+    !isempty(access_token) || return json_response(Dict("error" => "Not found"); status = 404)
+    job = get_job(String(id_text), access_token)
     job === nothing && return json_response(Dict("error" => "Not found"); status = 404)
     return json_response(Dict("job" => job))
 end
@@ -195,7 +202,7 @@ function app(req::HTTP.Request)
     path = uri.path
     method = String(req.method)
     if method == "GET" && startswith(path, "/api/jobs/")
-        return job_response(path)
+        return job_response(req, path)
     end
     if haskey(HANDLERS, (method, path))
         return HANDLERS[(method, path)](req)

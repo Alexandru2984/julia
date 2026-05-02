@@ -28,9 +28,13 @@ function setStatus(ok, text) {
 }
 
 async function api(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "Request failed");
@@ -50,9 +54,11 @@ function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function pollJob(jobId) {
+async function pollJob(jobId, jobToken) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const data = await api(`/api/jobs/${jobId}`);
+    const data = await api(`/api/jobs/${jobId}`, {
+      headers: { "X-Job-Token": jobToken },
+    });
     const job = data.job;
     resultTime.textContent = `Job #${job.id} ${job.status}`;
     if (job.status === "done") return job.result;
@@ -180,7 +186,7 @@ function renderJobs(jobs) {
   for (const job of jobs) {
     const item = el("div", "history-item");
     const title = el("div", "history-title");
-    title.append(el("span", "", `#${job.id} ${job.benchmark_type}`));
+    title.append(el("span", "", `#${job.label || String(job.id).slice(0, 8)} ${job.benchmark_type}`));
     title.append(el("span", `job-status ${job.status}`, job.status));
     item.append(title);
     const duration = job.duration_ms === null || job.duration_ms === undefined ? "pending" : `${job.duration_ms} ms`;
@@ -230,7 +236,7 @@ for (const card of document.querySelectorAll(".bench-card")) {
       resultTime.textContent = `Job #${queued.job_id} queued`;
       explanation.textContent = "Benchmark running...";
       button.textContent = "Running";
-      const result = await pollJob(queued.job_id);
+      const result = await pollJob(queued.job_id, queued.job_token);
       renderResult(result);
       await refreshRuns();
       await refreshJobs();
