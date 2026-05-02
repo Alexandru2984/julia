@@ -39,6 +39,22 @@ function formPayload(form) {
   return payload;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function pollJob(jobId) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const data = await api(`/api/jobs/${jobId}`);
+    const job = data.job;
+    resultTime.textContent = `Job #${job.id} ${job.status}`;
+    if (job.status === "done") return job.result;
+    if (job.status === "failed") throw new Error(job.error || "Benchmark job failed");
+    await sleep(500);
+  }
+  throw new Error("Benchmark job timed out while waiting for a result");
+}
+
 function renderChart(result) {
   const ctx = document.getElementById("chart");
   heatmap.hidden = true;
@@ -174,14 +190,18 @@ for (const card of document.querySelectorAll(".bench-card")) {
     event.preventDefault();
     const button = form.querySelector("button");
     button.disabled = true;
-    button.textContent = "Running";
-    explanation.textContent = "Benchmark running...";
+    button.textContent = "Queued";
+    explanation.textContent = "Benchmark queued...";
     explanation.classList.remove("error-text");
     try {
-      const result = await api(endpoints[benchmark], {
+      const queued = await api(endpoints[benchmark], {
         method: "POST",
         body: JSON.stringify(formPayload(form)),
       });
+      resultTime.textContent = `Job #${queued.job_id} queued`;
+      explanation.textContent = "Benchmark running...";
+      button.textContent = "Running";
+      const result = await pollJob(queued.job_id);
       renderResult(result);
       await refreshRuns();
     } catch (error) {

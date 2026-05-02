@@ -6,6 +6,7 @@ using Sockets
 const PUBLIC_DIR = joinpath(dirname(@__DIR__), "public")
 const MAX_BODY_BYTES = 4096
 const ACTIVE_BENCHMARKS = Ref(0)
+const BENCHMARK_SEMAPHORE = Ref{Any}(nothing)
 const BENCHMARK_LOCK = ReentrantLock()
 
 function max_concurrent_benchmarks()
@@ -17,14 +18,22 @@ function max_concurrent_benchmarks()
     end
 end
 
-function try_enter_benchmark()
+function benchmark_semaphore()
     lock(BENCHMARK_LOCK)
     try
-        if ACTIVE_BENCHMARKS[] >= max_concurrent_benchmarks()
-            return false
+        if BENCHMARK_SEMAPHORE[] === nothing
+            BENCHMARK_SEMAPHORE[] = Base.Semaphore(max_concurrent_benchmarks())
         end
+        return BENCHMARK_SEMAPHORE[]
+    finally
+        unlock(BENCHMARK_LOCK)
+    end
+end
+
+function enter_benchmark()
+    lock(BENCHMARK_LOCK)
+    try
         ACTIVE_BENCHMARKS[] += 1
-        return true
     finally
         unlock(BENCHMARK_LOCK)
     end
@@ -36,6 +45,36 @@ function leave_benchmark()
         ACTIVE_BENCHMARKS[] = max(0, ACTIVE_BENCHMARKS[] - 1)
     finally
         unlock(BENCHMARK_LOCK)
+    end
+end
+
+function params_to_dict(params)
+    return Dict(String(name) => getfield(params, name) for name in propertynames(params))
+end
+
+function start_benchmark_job!(job_id::Int, handler, params, benchmark_type::String, input_size::String)
+    @async begin
+        semaphore = benchmark_semaphore()
+        Base.acquire(semaphore)
+        enter_benchmark()
+        try
+            mark_job_running!(job_id)
+            result = handler(params)
+            result["timestamp"] = utc_timestamp()
+            insert_run!(
+                benchmark_type,
+                input_size,
+                result["duration_ms"],
+                JSON3.write(result["result"]),
+            )
+            complete_job!(job_id, result["duration_ms"], JSON3.write(result))
+        catch err
+            @error "Benchmark job failed" job_id = job_id benchmark_type = benchmark_type exception = (err, catch_backtrace())
+            fail_job!(job_id, sprint(showerror, err))
+        finally
+            leave_benchmark()
+            Base.release(semaphore)
+        end
     end
 end
 
@@ -73,29 +112,27 @@ end
 
 function with_benchmark(handler, validator, benchmark_type::String, input_summary)
     return function (req::HTTP.Request)
-        if !try_enter_benchmark()
-            return json_response(Dict("error" => "Too many benchmarks are already running"); status = 429)
-        end
         try
             payload = parse_body(req)
             params = validator(payload)
-            result = handler(params)
-            insert_run!(
+            input_size = input_summary(params)
+            job_id = create_job!(
                 benchmark_type,
-                input_summary(params),
-                result["duration_ms"],
-                JSON3.write(result["result"]),
+                JSON3.write(params_to_dict(params)),
+                input_size,
             )
-            result["timestamp"] = utc_timestamp()
-            return json_response(result)
+            start_benchmark_job!(job_id, handler, params, benchmark_type, input_size)
+            return json_response(Dict(
+                "job_id" => job_id,
+                "status" => "queued",
+                "poll_url" => "/api/jobs/$job_id",
+            ); status = 202)
         catch err
             if err isa ArgumentError
                 return json_response(Dict("error" => sprint(showerror, err)); status = 400)
             end
             @error "Benchmark request failed" exception = (err, catch_backtrace())
             return json_response(Dict("error" => "Benchmark failed"); status = 500)
-        finally
-            leave_benchmark()
         end
     end
 end
@@ -106,10 +143,13 @@ const HANDLERS = Dict{Tuple{String, String}, Function}(
         "service" => "Julia Scientific Benchmark Lab",
         "storage" => String(storage_backend()),
         "active_benchmarks" => ACTIVE_BENCHMARKS[],
+        "active_jobs" => active_job_count(),
+        "max_queued_jobs" => max_queued_jobs(),
         "max_concurrent_benchmarks" => max_concurrent_benchmarks(),
         "timestamp" => utc_timestamp(),
     )),
     ("GET", "/api/runs") => _ -> json_response(Dict("runs" => recent_runs(20))),
+    ("GET", "/api/jobs") => _ -> json_response(Dict("jobs" => recent_jobs(20))),
     ("POST", "/api/benchmark/matrix") => with_benchmark(
         p -> run_matrix(p.n),
         validate_matrix,
@@ -142,10 +182,21 @@ const HANDLERS = Dict{Tuple{String, String}, Function}(
     ),
 )
 
+function job_response(path::AbstractString)
+    id_text = replace(path, "/api/jobs/" => ""; count = 1)
+    !isempty(id_text) && all(isdigit, id_text) || return json_response(Dict("error" => "Not found"); status = 404)
+    job = get_job(parse(Int, id_text))
+    job === nothing && return json_response(Dict("error" => "Not found"); status = 404)
+    return json_response(Dict("job" => job))
+end
+
 function app(req::HTTP.Request)
     uri = HTTP.URI(req.target)
     path = uri.path
     method = String(req.method)
+    if method == "GET" && startswith(path, "/api/jobs/")
+        return job_response(path)
+    end
     if haskey(HANDLERS, (method, path))
         return HANDLERS[(method, path)](req)
     end
