@@ -1,9 +1,9 @@
 const LIMITS = Dict(
-    "matrix" => Dict("n" => (10, 300)),
-    "monte_carlo_pi" => Dict("samples" => (1_000, 200_000)),
-    "heat_diffusion" => Dict("grid" => (10, 80), "steps" => (1, 200)),
-    "random_walk" => Dict("steps" => (10, 5_000)),
-    "dataframe" => Dict("rows" => (1_000, 100_000)),
+    "matrix" => Dict("n" => (10, 600)),
+    "monte_carlo_pi" => Dict("samples" => (1_000, 2_000_000)),
+    "heat_diffusion" => Dict("grid" => (10, 160), "steps" => (1, 500)),
+    "random_walk" => Dict("steps" => (10, 100_000)),
+    "dataframe" => Dict("rows" => (1_000, 750_000)),
 )
 
 function require_int(payload, key::String; min::Int, max::Int)

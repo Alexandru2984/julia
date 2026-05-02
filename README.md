@@ -54,11 +54,11 @@ The app reads `/home/micu/julia/.env` through systemd.
 
 ## Benchmark Safety Limits
 
-- Matrix multiplication: `n` from 10 to 300.
-- Monte Carlo pi: `samples` from 1,000 to 200,000.
-- Heat diffusion: `grid` from 10 to 80, `steps` from 1 to 200.
-- Random walk: `steps` from 10 to 5,000.
-- DataFrame processing: `rows` from 1,000 to 100,000.
+- Matrix multiplication: `n` from 10 to 600.
+- Monte Carlo pi: `samples` from 1,000 to 2,000,000.
+- Heat diffusion: `grid` from 10 to 160, `steps` from 1 to 500.
+- Random walk: `steps` from 10 to 100,000.
+- DataFrame processing: `rows` from 1,000 to 750,000.
 - Nginx rate limits benchmark API calls.
 - The Julia process allows only a small number of concurrent benchmark runs.
 - Benchmark requests are queued as jobs and polled by the frontend.

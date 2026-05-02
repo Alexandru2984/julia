@@ -89,7 +89,8 @@ main {
 .stat,
 .bench-card,
 .results-panel,
-.history-panel {
+.history-panel,
+.jobs-panel {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -179,9 +180,16 @@ button:disabled {
 }
 
 .results-panel,
-.history-panel {
+.history-panel,
+.jobs-panel {
   min-width: 0;
   padding: 16px;
+}
+
+.side-stack {
+  display: grid;
+  gap: 14px;
+  align-content: start;
 }
 
 .panel-title {
@@ -192,7 +200,8 @@ button:disabled {
   margin-bottom: 14px;
 }
 
-#refreshRuns {
+#refreshRuns,
+#refreshJobs {
   width: auto;
   min-width: 84px;
   background: var(--panel-2);
@@ -252,6 +261,34 @@ canvas {
   gap: 12px;
   margin-bottom: 6px;
   font-weight: 800;
+}
+
+.job-status {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.job-status.done {
+  color: #07130e;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.job-status.running,
+.job-status.queued {
+  color: #07111f;
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+}
+
+.job-status.failed {
+  color: #220707;
+  background: var(--danger);
+  border-color: var(--danger);
 }
 
 .error-text { color: var(--danger); }

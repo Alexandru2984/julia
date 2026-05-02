@@ -14,6 +14,13 @@ const resultTime = document.getElementById("resultTime");
 const explanation = document.getElementById("explanation");
 const heatmap = document.getElementById("heatmap");
 
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
 function setStatus(ok, text) {
   statusBadge.textContent = text;
   statusBadge.classList.toggle("ok", ok);
@@ -153,15 +160,32 @@ function renderHistory(runs) {
     return;
   }
   for (const run of runs) {
-    const item = document.createElement("div");
-    item.className = "history-item";
-    item.innerHTML = `
-      <div class="history-title">
-        <span>${run.benchmark_type}</span>
-        <span>${run.duration_ms} ms</span>
-      </div>
-      <div class="history-meta">${run.input_size} · ${new Date(run.created_at).toLocaleString()}</div>
-    `;
+    const item = el("div", "history-item");
+    const title = el("div", "history-title");
+    title.append(el("span", "", run.benchmark_type));
+    title.append(el("span", "", `${run.duration_ms} ms`));
+    item.append(title);
+    item.append(el("div", "history-meta", `${run.input_size} · ${new Date(run.created_at).toLocaleString()}`));
+    list.appendChild(item);
+  }
+}
+
+function renderJobs(jobs) {
+  const list = document.getElementById("jobsList");
+  list.innerHTML = "";
+  if (jobs.length === 0) {
+    list.append(el("p", "muted", "No jobs yet."));
+    return;
+  }
+  for (const job of jobs) {
+    const item = el("div", "history-item");
+    const title = el("div", "history-title");
+    title.append(el("span", "", `#${job.id} ${job.benchmark_type}`));
+    title.append(el("span", `job-status ${job.status}`, job.status));
+    item.append(title);
+    const duration = job.duration_ms === null || job.duration_ms === undefined ? "pending" : `${job.duration_ms} ms`;
+    item.append(el("div", "history-meta", `${job.input_size} · ${duration} · ${new Date(job.created_at).toLocaleString()}`));
+    if (job.error) item.append(el("div", "error-text", job.error));
     list.appendChild(item);
   }
 }
@@ -169,6 +193,11 @@ function renderHistory(runs) {
 async function refreshRuns() {
   const data = await api("/api/runs");
   renderHistory(data.runs);
+}
+
+async function refreshJobs() {
+  const data = await api("/api/jobs");
+  renderJobs(data.jobs);
 }
 
 async function checkHealth() {
@@ -204,6 +233,7 @@ for (const card of document.querySelectorAll(".bench-card")) {
       const result = await pollJob(queued.job_id);
       renderResult(result);
       await refreshRuns();
+      await refreshJobs();
     } catch (error) {
       explanation.textContent = error.message;
       explanation.classList.add("error-text");
@@ -215,5 +245,8 @@ for (const card of document.querySelectorAll(".bench-card")) {
 }
 
 document.getElementById("refreshRuns").addEventListener("click", refreshRuns);
+document.getElementById("refreshJobs").addEventListener("click", refreshJobs);
 checkHealth();
 refreshRuns();
+refreshJobs();
+window.setInterval(refreshJobs, 5000);
