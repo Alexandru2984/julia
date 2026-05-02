@@ -1,0 +1,3 @@
+using JuliaScientificBenchmarkLab
+
+JuliaScientificBenchmarkLab.main()

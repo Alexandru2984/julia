@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Julia Scientific Benchmark Lab</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Julia Scientific Benchmark Lab</p>
+      <h1>Scientific benchmarks on a live Julia runtime</h1>
+    </div>
+    <div class="status" id="statusBadge">Checking health</div>
+  </header>
+
+  <main>
+    <section class="stats-grid" aria-label="Quick stats">
+      <div class="stat"><span>Runtime</span><strong>Julia 1.12.6</strong></div>
+      <div class="stat"><span>Storage</span><strong>SQLite history</strong></div>
+      <div class="stat"><span>Recent runs</span><strong id="runCount">0</strong></div>
+      <div class="stat"><span>Last duration</span><strong id="lastDuration">None</strong></div>
+    </section>
+
+    <section class="lab-grid" aria-label="Benchmarks">
+      <article class="bench-card" data-benchmark="matrix">
+        <div class="card-head">
+          <h2>Matrix multiplication</h2>
+          <span>10-300</span>
+        </div>
+        <form>
+          <label>Matrix size n<input name="n" type="number" min="10" max="300" value="120" required></label>
+          <button type="submit">Run</button>
+        </form>
+      </article>
+
+      <article class="bench-card" data-benchmark="monte-carlo-pi">
+        <div class="card-head">
+          <h2>Monte Carlo pi</h2>
+          <span>1k-200k</span>
+        </div>
+        <form>
+          <label>Samples<input name="samples" type="number" min="1000" max="200000" value="50000" required></label>
+          <button type="submit">Run</button>
+        </form>
+      </article>
+
+      <article class="bench-card" data-benchmark="heat-diffusion">
+        <div class="card-head">
+          <h2>2D heat diffusion</h2>
+          <span>80 max grid</span>
+        </div>
+        <form>
+          <label>Grid<input name="grid" type="number" min="10" max="80" value="40" required></label>
+          <label>Steps<input name="steps" type="number" min="1" max="200" value="80" required></label>
+          <button type="submit">Run</button>
+        </form>
+      </article>
+
+      <article class="bench-card" data-benchmark="random-walk">
+        <div class="card-head">
+          <h2>Random walk</h2>
+          <span>5k steps max</span>
+        </div>
+        <form>
+          <label>Steps<input name="steps" type="number" min="10" max="5000" value="1500" required></label>
+          <button type="submit">Run</button>
+        </form>
+      </article>
+
+      <article class="bench-card" data-benchmark="dataframe">
+        <div class="card-head">
+          <h2>DataFrame processing</h2>
+          <span>100k rows max</span>
+        </div>
+        <form>
+          <label>Rows<input name="rows" type="number" min="1000" max="100000" value="50000" required></label>
+          <button type="submit">Run</button>
+        </form>
+      </article>
+    </section>
+
+    <section class="results-layout">
+      <div class="results-panel">
+        <div class="panel-title">
+          <h2>Result</h2>
+          <span id="resultTime">Waiting for a run</span>
+        </div>
+        <p id="explanation" class="muted">Choose a module and run a benchmark.</p>
+        <pre id="resultJson">{}</pre>
+        <canvas id="chart" height="140"></canvas>
+        <div id="heatmap" class="heatmap" hidden></div>
+      </div>
+
+      <div class="history-panel">
+        <div class="panel-title">
+          <h2>Last 20 runs</h2>
+          <button id="refreshRuns" type="button">Refresh</button>
+        </div>
+        <div id="historyList" class="history-list"></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

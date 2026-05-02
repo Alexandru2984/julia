@@ -1,0 +1,22 @@
+[Unit]
+Description=Julia Scientific Benchmark Lab
+After=network.target
+
+[Service]
+Type=simple
+User=micu
+Group=micu
+WorkingDirectory=/home/micu/julia
+EnvironmentFile=/home/micu/julia/.env
+Environment=JULIA_PROJECT=/home/micu/julia
+Environment=JULIA_DEPOT_PATH=/home/micu/julia/.julia_depot
+ExecStart=/home/micu/julia/runtime/julia-1.12.6/bin/julia --project=/home/micu/julia /home/micu/julia/src/main.jl
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/micu/julia
+
+[Install]
+WantedBy=multi-user.target

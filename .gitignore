@@ -1,0 +1,10 @@
+.env
+.julia_depot/
+data/
+downloads/
+runtime/
+*.log
+*.pid
+.DS_Store
+coverage/
+tmp/
