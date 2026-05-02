@@ -13,10 +13,29 @@ Environment=JULIA_DEPOT_PATH=/home/micu/julia/.julia_depot
 ExecStart=/home/micu/julia/runtime/julia-1.12.6/bin/julia --project=/home/micu/julia /home/micu/julia/src/main.jl
 Restart=on-failure
 RestartSec=5
+CPUQuota=150%
+MemoryMax=700M
+TasksMax=64
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
-ReadWritePaths=/home/micu/julia
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+CapabilityBoundingSet=
+ReadWritePaths=/home/micu/julia/data /home/micu/julia/.julia_depot/compiled /home/micu/julia/.julia_depot/logs
 
 [Install]
 WantedBy=multi-user.target

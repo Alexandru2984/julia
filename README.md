@@ -7,7 +7,7 @@ Julia Scientific Benchmark Lab is a production-oriented Julia web dashboard for 
 - Dark responsive dashboard with benchmark cards, status, quick stats, and recent history.
 - JSON API for health checks, recent runs, and benchmark execution.
 - Benchmarks for dense matrix multiplication, Monte Carlo pi, 2D heat diffusion, random walk, and DataFrame processing.
-- SQLite-backed recent run history.
+- PostgreSQL-backed recent run history, with SQLite fallback for local development.
 - Strict input validation and hard limits to protect the VPS.
 - Nginx reverse proxy with HTTPS via Certbot.
 
@@ -16,7 +16,7 @@ Julia Scientific Benchmark Lab is a production-oriented Julia web dashboard for 
 - Julia 1.12.6 installed under `/home/micu/julia/runtime`.
 - HTTP.jl for the web server.
 - JSON3.jl for JSON.
-- SQLite.jl and DBInterface.jl for storage.
+- LibPQ.jl, SQLite.jl, and DBInterface.jl for storage.
 - DataFrames.jl for the DataFrame benchmark.
 - Plain HTML, CSS, JavaScript, and Chart.js on the frontend.
 
@@ -38,6 +38,9 @@ The app reads `/home/micu/julia/.env` through systemd.
 - `APP_HOST=127.0.0.1`
 - `APP_PORT=<chosen local port>`
 - `JULIA_NUM_THREADS=2`
+- `DATABASE_URL=postgresql://...`
+- `RUN_RETENTION=5000`
+- `MAX_CONCURRENT_BENCHMARKS=2`
 
 `.env` is intentionally ignored by Git.
 
@@ -55,8 +58,11 @@ The app reads `/home/micu/julia/.env` through systemd.
 - Heat diffusion: `grid` from 10 to 80, `steps` from 1 to 200.
 - Random walk: `steps` from 10 to 5,000.
 - DataFrame processing: `rows` from 1,000 to 100,000.
+- Nginx rate limits benchmark API calls.
+- The Julia process allows only a small number of concurrent benchmark runs.
 - Nginx request body size is limited to 16 KB.
 - The Julia app rejects request bodies over 4 KB.
+- Run history retention defaults to 5,000 rows.
 
 ## API
 
@@ -72,7 +78,9 @@ The app reads `/home/micu/julia/.env` through systemd.
 
 The app binds only to `127.0.0.1`; Nginx is the public entry point. Existing services are not killed during deployment. If the preferred port is occupied, `scripts/find_free_port.sh` selects the next free port.
 
-Git commits and pushes are manual and were not done by the agent.
+Production hardening includes Nginx CSP/HSTS/security headers, request rate limits, a local-only PostgreSQL database user, and systemd resource limits.
+
+Git commits and pushes are normally manual. The security hardening update was committed and pushed only after explicit owner approval.
 
 ## Troubleshooting
 
@@ -83,4 +91,5 @@ sudo nginx -t
 curl -fsS http://127.0.0.1:$APP_PORT/health
 curl -fsS https://julia.micutu.com/health
 sqlite3 /home/micu/julia/data/runs.sqlite3 'select * from benchmark_runs order by created_at desc limit 5;'
+sudo -u postgres psql -d julia_benchmark_lab -c 'select benchmark_type, duration_ms, created_at from benchmark_runs order by created_at desc limit 5;'
 ```

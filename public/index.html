@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Julia Scientific Benchmark Lab</title>
   <link rel="stylesheet" href="/styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
+  <script src="/vendor/chart.umd.min.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -20,7 +20,7 @@
   <main>
     <section class="stats-grid" aria-label="Quick stats">
       <div class="stat"><span>Runtime</span><strong>Julia 1.12.6</strong></div>
-      <div class="stat"><span>Storage</span><strong>SQLite history</strong></div>
+      <div class="stat"><span>Storage</span><strong id="storageBackend">PostgreSQL history</strong></div>
       <div class="stat"><span>Recent runs</span><strong id="runCount">0</strong></div>
       <div class="stat"><span>Last duration</span><strong id="lastDuration">None</strong></div>
     </section>

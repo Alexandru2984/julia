@@ -157,7 +157,10 @@ async function refreshRuns() {
 
 async function checkHealth() {
   try {
-    await api("/health");
+    const health = await api("/health");
+    if (health.storage) {
+      document.getElementById("storageBackend").textContent = `${health.storage} history`;
+    }
     setStatus(true, "Healthy");
   } catch {
     setStatus(false, "Health check failed");

@@ -5,6 +5,39 @@ using Sockets
 
 const PUBLIC_DIR = joinpath(dirname(@__DIR__), "public")
 const MAX_BODY_BYTES = 4096
+const ACTIVE_BENCHMARKS = Ref(0)
+const BENCHMARK_LOCK = ReentrantLock()
+
+function max_concurrent_benchmarks()
+    raw = get(ENV, "MAX_CONCURRENT_BENCHMARKS", "2")
+    try
+        return clamp(parse(Int, raw), 1, 8)
+    catch
+        return 2
+    end
+end
+
+function try_enter_benchmark()
+    lock(BENCHMARK_LOCK)
+    try
+        if ACTIVE_BENCHMARKS[] >= max_concurrent_benchmarks()
+            return false
+        end
+        ACTIVE_BENCHMARKS[] += 1
+        return true
+    finally
+        unlock(BENCHMARK_LOCK)
+    end
+end
+
+function leave_benchmark()
+    lock(BENCHMARK_LOCK)
+    try
+        ACTIVE_BENCHMARKS[] = max(0, ACTIVE_BENCHMARKS[] - 1)
+    finally
+        unlock(BENCHMARK_LOCK)
+    end
+end
 
 function json_response(data; status::Int = 200)
     return HTTP.Response(
@@ -20,8 +53,9 @@ end
 
 function static_response(path::AbstractString)
     clean_path = path == "/" ? "/index.html" : path
-    safe_name = basename(clean_path)
-    full_path = joinpath(PUBLIC_DIR, safe_name)
+    full_path = clean_path == "/vendor/chart.umd.min.js" ?
+        joinpath(PUBLIC_DIR, "vendor", "chart.umd.min.js") :
+        joinpath(PUBLIC_DIR, basename(clean_path))
     isfile(full_path) || return text_response("Not found"; status = 404)
     content_type = endswith(full_path, ".html") ? "text/html; charset=utf-8" :
         endswith(full_path, ".css") ? "text/css; charset=utf-8" :
@@ -39,6 +73,9 @@ end
 
 function with_benchmark(handler, validator, benchmark_type::String, input_summary)
     return function (req::HTTP.Request)
+        if !try_enter_benchmark()
+            return json_response(Dict("error" => "Too many benchmarks are already running"); status = 429)
+        end
         try
             payload = parse_body(req)
             params = validator(payload)
@@ -49,7 +86,7 @@ function with_benchmark(handler, validator, benchmark_type::String, input_summar
                 result["duration_ms"],
                 JSON3.write(result["result"]),
             )
-            result["timestamp"] = Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sssZ")
+            result["timestamp"] = utc_timestamp()
             return json_response(result)
         catch err
             if err isa ArgumentError
@@ -57,6 +94,8 @@ function with_benchmark(handler, validator, benchmark_type::String, input_summar
             end
             @error "Benchmark request failed" exception = (err, catch_backtrace())
             return json_response(Dict("error" => "Benchmark failed"); status = 500)
+        finally
+            leave_benchmark()
         end
     end
 end
@@ -65,7 +104,10 @@ const HANDLERS = Dict{Tuple{String, String}, Function}(
     ("GET", "/health") => _ -> json_response(Dict(
         "status" => "ok",
         "service" => "Julia Scientific Benchmark Lab",
-        "timestamp" => Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sssZ"),
+        "storage" => String(storage_backend()),
+        "active_benchmarks" => ACTIVE_BENCHMARKS[],
+        "max_concurrent_benchmarks" => max_concurrent_benchmarks(),
+        "timestamp" => utc_timestamp(),
     )),
     ("GET", "/api/runs") => _ -> json_response(Dict("runs" => recent_runs(20))),
     ("POST", "/api/benchmark/matrix") => with_benchmark(
@@ -107,7 +149,7 @@ function app(req::HTTP.Request)
     if haskey(HANDLERS, (method, path))
         return HANDLERS[(method, path)](req)
     end
-    if method == "GET" && (path == "/" || path == "/index.html" || path == "/styles.css" || path == "/app.js")
+    if method == "GET" && (path == "/" || path == "/index.html" || path == "/styles.css" || path == "/app.js" || path == "/vendor/chart.umd.min.js")
         return static_response(path)
     end
     return json_response(Dict("error" => "Not found"); status = 404)
