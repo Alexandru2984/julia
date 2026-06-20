@@ -24,7 +24,16 @@ function db()
         return conn
     else
         mkpath(DATA_DIR)
-        return SQLite.DB(DB_PATH)
+        database = SQLite.DB(DB_PATH)
+        # Benchmarks run on worker threads and write while read endpoints poll,
+        # so concurrent connections contend for SQLite's single writer. WAL plus
+        # a busy timeout lets writers wait for the lock instead of failing fast
+        # with "database is locked". (Production uses Postgres; this hardens the
+        # local-dev fallback.)
+        DBInterface.execute(database, "PRAGMA journal_mode = WAL")
+        DBInterface.execute(database, "PRAGMA busy_timeout = 5000")
+        DBInterface.execute(database, "PRAGMA synchronous = NORMAL")
+        return database
     end
 end
 

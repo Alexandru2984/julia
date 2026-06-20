@@ -53,7 +53,13 @@ function params_to_dict(params)
 end
 
 function start_benchmark_job!(job_id::Int, handler, params, benchmark_type::String, input_size::String)
-    @async begin
+    # Run on a worker thread (Threads.@spawn), not @async. Benchmarks are
+    # CPU-bound and contain no yield points, so a cooperative @async task would
+    # block the HTTP event loop for the whole run (freezing /health, polling,
+    # and other requests). Spawning keeps the server responsive when
+    # JULIA_NUM_THREADS > 1. DB access uses a fresh connection per call and all
+    # shared counters are lock-guarded, so this is thread-safe.
+    Threads.@spawn begin
         semaphore = benchmark_semaphore()
         Base.acquire(semaphore)
         enter_benchmark()
