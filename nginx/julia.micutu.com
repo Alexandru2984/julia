@@ -43,6 +43,26 @@ server {
         proxy_read_timeout 30s;
     }
 
+    # Exact match for the jobs list endpoint. Without this, the prefix location
+    # below (trailing slash) makes nginx 301-redirect /api/jobs -> /api/jobs/,
+    # which the app then treats as a job lookup with an empty id and 404s,
+    # breaking the frontend's job list. An exact match takes precedence and is
+    # proxied as-is.
+    location = /api/jobs {
+        limit_req zone=julia_jobs_poll burst=20 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8095;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+
     location /api/jobs/ {
         limit_req zone=julia_jobs_poll burst=20 nodelay;
         limit_req_status 429;
