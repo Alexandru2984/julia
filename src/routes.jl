@@ -197,7 +197,7 @@ function job_response(req::HTTP.Request, path::AbstractString)
     return json_response(Dict("job" => job))
 end
 
-function app(req::HTTP.Request)
+function dispatch(req::HTTP.Request)
     uri = HTTP.URI(req.target)
     path = uri.path
     method = String(req.method)
@@ -211,4 +211,16 @@ function app(req::HTTP.Request)
         return static_response(path)
     end
     return json_response(Dict("error" => "Not found"); status = 404)
+end
+
+function app(req::HTTP.Request)
+    try
+        return dispatch(req)
+    catch err
+        # Safety net: read endpoints (/health, /api/runs, /api/jobs, job lookups)
+        # are not individually wrapped, so a transient storage error here must
+        # still return a clean JSON 500 instead of leaking a stack trace.
+        @error "Unhandled request error" target = req.target exception = (err, catch_backtrace())
+        return json_response(Dict("error" => "Internal server error"); status = 500)
+    end
 end
