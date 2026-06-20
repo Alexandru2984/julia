@@ -50,6 +50,19 @@ Keep it owner-readable only:
 chmod 600 /home/micu/julia/.env
 ```
 
+## Tests
+
+Unit tests cover input validation, benchmark output shape, and the
+env-driven limit clamps (no database required):
+
+```bash
+cd /home/micu/julia
+JULIA_DEPOT_PATH=/home/micu/julia/.julia_depot \
+  runtime/julia-1.12.6/bin/julia --project=. test/runtests.jl
+```
+
+Or via the package test target: `Pkg.test("JuliaScientificBenchmarkLab")`.
+
 ## Service And Proxy
 
 - Systemd service: `julia-benchmark-lab.service`
