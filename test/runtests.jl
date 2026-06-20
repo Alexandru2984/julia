@@ -3,6 +3,18 @@ using JuliaScientificBenchmarkLab
 
 const JSBL = JuliaScientificBenchmarkLab
 
+# Run `f` against a throwaway SQLite database in a temp dir. DATABASE_URL is
+# forced unset so storage tests never touch a real Postgres (prod) instance,
+# and JULIA_BENCH_DATA_DIR redirects the SQLite file away from ./data.
+function with_fresh_db(f)
+    mktempdir() do dir
+        withenv("JULIA_BENCH_DATA_DIR" => dir, "DATABASE_URL" => nothing) do
+            JSBL.init_storage!()
+            f()
+        end
+    end
+end
+
 @testset "JuliaScientificBenchmarkLab" begin
     @testset "validation: accepts valid input" begin
         @test JSBL.validate_matrix(Dict("n" => 100)).n == 100
@@ -70,6 +82,91 @@ const JSBL = JuliaScientificBenchmarkLab
         @test length(JSBL.new_access_token()) == 48
         @test occursin(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", JSBL.new_public_id())
         @test endswith(JSBL.utc_timestamp(), "Z")
+    end
+
+    @testset "storage: job access requires the matching token" begin
+        with_fresh_db() do
+            job = JSBL.create_job!("matrix", "{\"n\":50}", "50x50")
+            @test JSBL.get_job(job["public_id"], job["access_token"]) !== nothing
+            # Wrong token must not return the job (no token-less lookup).
+            @test JSBL.get_job(job["public_id"], "not-the-token") === nothing
+            @test JSBL.get_job(job["public_id"], "") === nothing
+            # Unknown id, even with a real-looking token, returns nothing.
+            @test JSBL.get_job("00000000-0000-0000-0000-000000000000", job["access_token"]) === nothing
+        end
+    end
+
+    @testset "storage: job summaries never leak token, input, or result" begin
+        with_fresh_db() do
+            job = JSBL.create_job!("matrix", "{\"n\":50}", "50x50")
+            JSBL.complete_job!(job["id"], 12.5, "{\"result\":{\"checksum\":1}}")
+            for summary in JSBL.recent_jobs(20)
+                @test !haskey(summary, "access_token")
+                @test !haskey(summary, "input")
+                @test !haskey(summary, "result")
+                @test haskey(summary, "id")
+                @test haskey(summary, "status")
+            end
+        end
+    end
+
+    @testset "storage: job lifecycle transitions" begin
+        with_fresh_db() do
+            job = JSBL.create_job!("matrix", "{\"n\":50}", "50x50")
+            @test JSBL.get_job(job["public_id"], job["access_token"])["status"] == "queued"
+            JSBL.mark_job_running!(job["id"])
+            @test JSBL.get_job(job["public_id"], job["access_token"])["status"] == "running"
+            JSBL.complete_job!(job["id"], 12.5, "{\"result\":{\"checksum\":1}}")
+            done = JSBL.get_job(job["public_id"], job["access_token"])
+            @test done["status"] == "done"
+            @test done["duration_ms"] == 12.5
+            @test done["finished_at"] !== nothing
+        end
+    end
+
+    @testset "storage: create_job! enforces the queue limit" begin
+        with_fresh_db() do
+            withenv("MAX_QUEUED_JOBS" => "2") do
+                JSBL.create_job!("matrix", "{}", "a")
+                JSBL.create_job!("matrix", "{}", "b")
+                @test JSBL.active_job_count() == 2
+                @test_throws ArgumentError JSBL.create_job!("matrix", "{}", "c")
+            end
+        end
+    end
+
+    @testset "storage: restart marks incomplete jobs as failed" begin
+        with_fresh_db() do
+            job = JSBL.create_job!("matrix", "{}", "x")
+            JSBL.mark_job_running!(job["id"])
+            JSBL.init_storage!()  # simulate a service restart
+            fetched = JSBL.get_job(job["public_id"], job["access_token"])
+            @test fetched["status"] == "failed"
+            @test fetched["error"] !== nothing
+        end
+    end
+
+    @testset "storage: fail_job truncates oversized error messages" begin
+        with_fresh_db() do
+            job = JSBL.create_job!("matrix", "{}", "x")
+            JSBL.fail_job!(job["id"], repeat("e", 5000))
+            fetched = JSBL.get_job(job["public_id"], job["access_token"])
+            @test fetched["status"] == "failed"
+            @test length(fetched["error"]) <= 600
+        end
+    end
+
+    @testset "storage: runs insert/read roundtrip" begin
+        with_fresh_db() do
+            @test JSBL.run_count() == 0
+            JSBL.insert_run!("matrix", "50x50", 12.345, "{\"checksum\":1}")
+            @test JSBL.run_count() == 1
+            runs = JSBL.recent_runs(20)
+            @test length(runs) == 1
+            @test runs[1]["benchmark_type"] == "matrix"
+            @test runs[1]["input_size"] == "50x50"
+            @test runs[1]["duration_ms"] == 12.345
+        end
     end
 
     @testset "helpers: env-driven limits are clamped" begin

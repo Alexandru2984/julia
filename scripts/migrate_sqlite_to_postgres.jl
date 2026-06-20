@@ -6,15 +6,15 @@ include(joinpath(@__DIR__, "..", "src", "storage.jl"))
 
 function main()
     haskey(ENV, "DATABASE_URL") || error("DATABASE_URL is required")
-    isfile(DB_PATH) || begin
-        println("No SQLite database found at $DB_PATH; nothing to migrate")
+    isfile(db_path()) || begin
+        println("No SQLite database found at $(db_path()); nothing to migrate")
         return
     end
 
     init_storage!()
 
     pg = DBInterface.connect(LibPQ.Connection, ENV["DATABASE_URL"]; connect_timeout = 5)
-    sqlite = SQLite.DB(DB_PATH)
+    sqlite = SQLite.DB(db_path())
     migrated = 0
     try
         existing = first(DBInterface.execute(pg, "SELECT COUNT(*) AS count FROM benchmark_runs")).count

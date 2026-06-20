@@ -6,8 +6,12 @@ using Random
 using SQLite
 using UUIDs
 
-const DATA_DIR = joinpath(dirname(@__DIR__), "data")
-const DB_PATH = joinpath(DATA_DIR, "runs.sqlite3")
+# Functions (not consts) so the path is resolved at call time. A const that
+# reads ENV would be baked in at precompile time, which both ignores runtime
+# JULIA_BENCH_DATA_DIR overrides and makes the storage layer untestable in
+# isolation. Production leaves JULIA_BENCH_DATA_DIR unset, so the default holds.
+data_dir() = get(ENV, "JULIA_BENCH_DATA_DIR", joinpath(dirname(@__DIR__), "data"))
+db_path() = joinpath(data_dir(), "runs.sqlite3")
 
 utc_timestamp() = Dates.format(Dates.now(Dates.UTC), dateformat"yyyy-mm-ddTHH:MM:SS.sss") * "Z"
 new_public_id() = string(uuid4())
@@ -23,8 +27,8 @@ function db()
         DBInterface.execute(conn, "SET client_min_messages TO warning")
         return conn
     else
-        mkpath(DATA_DIR)
-        database = SQLite.DB(DB_PATH)
+        mkpath(data_dir())
+        database = SQLite.DB(db_path())
         # Benchmarks run on worker threads and write while read endpoints poll,
         # so concurrent connections contend for SQLite's single writer. WAL plus
         # a busy timeout lets writers wait for the lock instead of failing fast
