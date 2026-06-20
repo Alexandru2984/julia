@@ -18,11 +18,23 @@ function max_concurrent_benchmarks()
     end
 end
 
+# Keep at least one thread free for the HTTP event loop. Benchmarks are
+# CPU-bound with no yield points, so running as many concurrent benchmarks as
+# there are threads starves /health and job polling for the whole run (measured:
+# ~1.9s stalls with 2 threads and 2 concurrent heavy benchmarks). Capping
+# concurrency to nthreads-1 guarantees a thread is always available to serve
+# lightweight requests, regardless of how MAX_CONCURRENT_BENCHMARKS is set.
+thread_capped(configured::Int, nthreads::Int) = min(configured, max(1, nthreads - 1))
+
+function effective_max_concurrent_benchmarks()
+    return thread_capped(max_concurrent_benchmarks(), Threads.nthreads())
+end
+
 function benchmark_semaphore()
     lock(BENCHMARK_LOCK)
     try
         if BENCHMARK_SEMAPHORE[] === nothing
-            BENCHMARK_SEMAPHORE[] = Base.Semaphore(max_concurrent_benchmarks())
+            BENCHMARK_SEMAPHORE[] = Base.Semaphore(effective_max_concurrent_benchmarks())
         end
         return BENCHMARK_SEMAPHORE[]
     finally
@@ -156,7 +168,9 @@ const HANDLERS = Dict{Tuple{String, String}, Function}(
         "active_benchmarks" => ACTIVE_BENCHMARKS[],
         "active_jobs" => active_job_count(),
         "max_queued_jobs" => max_queued_jobs(),
-        "max_concurrent_benchmarks" => max_concurrent_benchmarks(),
+        "max_concurrent_benchmarks" => effective_max_concurrent_benchmarks(),
+        "configured_max_concurrent_benchmarks" => max_concurrent_benchmarks(),
+        "threads" => Threads.nthreads(),
         "timestamp" => utc_timestamp(),
     )),
     ("GET", "/api/runs") => _ -> json_response(Dict("runs" => recent_runs(20))),

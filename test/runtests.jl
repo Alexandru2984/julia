@@ -169,6 +169,17 @@ end
         end
     end
 
+    @testset "helpers: benchmark concurrency leaves a thread for HTTP" begin
+        # Always reserve one thread for the event loop (nthreads-1), but never
+        # drop below 1, and never exceed the configured limit.
+        @test JSBL.thread_capped(2, 2) == 1   # prod default: 2 threads -> 1 benchmark
+        @test JSBL.thread_capped(2, 3) == 2   # 3 threads -> full configured concurrency
+        @test JSBL.thread_capped(8, 4) == 3   # capped by threads, not config
+        @test JSBL.thread_capped(2, 1) == 1   # single thread -> at least 1
+        @test JSBL.thread_capped(1, 8) == 1   # never exceed configured
+        @test JSBL.thread_capped(4, 12) == 4  # plenty of threads -> use configured
+    end
+
     @testset "helpers: env-driven limits are clamped" begin
         withenv("MAX_QUEUED_JOBS" => "9999") do
             @test JSBL.max_queued_jobs() == 500
