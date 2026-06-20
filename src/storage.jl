@@ -21,7 +21,7 @@ function storage_backend()
     return isempty(get(ENV, "DATABASE_URL", "")) ? :sqlite : :postgres
 end
 
-function db()
+function open_connection()
     if storage_backend() == :postgres
         conn = DBInterface.connect(LibPQ.Connection, ENV["DATABASE_URL"]; connect_timeout = 5)
         DBInterface.execute(conn, "SET client_min_messages TO warning")
@@ -44,6 +44,131 @@ end
 close_db(database::SQLite.DB) = SQLite.close(database)
 close_db(database::LibPQ.DBConnection) = DBInterface.close!(database)
 
+function safe_close(conn)
+    try
+        close_db(conn)
+    catch
+    end
+    return nothing
+end
+
+# --- Connection pooling (Postgres) -----------------------------------------
+# A bounded, thread-safe pool of reusable connections. Benchmarks run on worker
+# threads and the frontend polls a few times per second, so without pooling
+# every request paid a fresh TCP+auth handshake (and create_job! opened two
+# connections). The pool is generic over the connection type and its
+# open/isalive/close operations so its mechanics are unit-testable without a
+# live database.
+#
+# Only Postgres is pooled. SQLite is cheap to open and the tests rely on each
+# call re-resolving JULIA_BENCH_DATA_DIR, so SQLite stays open-per-call.
+struct ConnectionPool
+    open::Function        # () -> conn
+    validate::Function    # conn -> Bool, run on checkout to catch stale idle conns
+    close::Function       # conn -> nothing
+    max::Int
+    slots::Base.Semaphore # bounds total outstanding (idle + checked-out) to max
+    idle::Vector{Any}
+    lock::ReentrantLock
+end
+
+ConnectionPool(open, validate, close, max::Int) =
+    ConnectionPool(open, validate, close, max, Base.Semaphore(max), Any[], ReentrantLock())
+
+function checkout!(pool::ConnectionPool)
+    Base.acquire(pool.slots)
+    conn = lock(pool.lock) do
+        isempty(pool.idle) ? nothing : pop!(pool.idle)
+    end
+    if conn !== nothing
+        # A pooled connection may have been dropped server-side while idle (DB
+        # restart, idle timeout, NAT). PQstatus alone won't notice until the
+        # socket is used, so validate with a real round trip and replace if dead.
+        # Freshly opened connections (below) skip this — they are known good.
+        pool.validate(conn) && return conn
+        pool.close(conn)
+    end
+    try
+        return pool.open()
+    catch
+        Base.release(pool.slots)  # creating a replacement failed; give the slot back
+        rethrow()
+    end
+end
+
+function checkin!(pool::ConnectionPool, conn)
+    # The caller only checks in after a successful operation (with_connection
+    # discards on error), so the connection is known good here; pool it directly.
+    # Staleness that develops while idle is caught on the next checkout.
+    lock(pool.lock) do
+        push!(pool.idle, conn)
+    end
+    Base.release(pool.slots)
+    return nothing
+end
+
+function discard!(pool::ConnectionPool, conn)
+    pool.close(conn)
+    Base.release(pool.slots)
+    return nothing
+end
+
+function db_pool_size()
+    raw = get(ENV, "DB_POOL_SIZE", "4")
+    try
+        return clamp(parse(Int, raw), 1, 16)
+    catch
+        return 4
+    end
+end
+
+function pg_validate(conn)
+    try
+        isopen(conn.conn) || return false
+        DBInterface.execute(conn, "SELECT 1")  # authoritative liveness check
+        return true
+    catch
+        return false
+    end
+end
+
+const PG_POOL = Ref{Any}(nothing)
+const PG_POOL_LOCK = ReentrantLock()
+
+function pg_pool()
+    return lock(PG_POOL_LOCK) do
+        if PG_POOL[] === nothing
+            PG_POOL[] = ConnectionPool(open_connection, pg_validate, safe_close, db_pool_size())
+        end
+        return PG_POOL[]
+    end
+end
+
+# Run `f(conn)` with a database connection. Postgres connections come from the
+# pool (returned on success, discarded on error so a broken connection is never
+# reused). SQLite is opened per call and always closed.
+function with_connection(f)
+    if storage_backend() == :postgres
+        pool = pg_pool()
+        conn = checkout!(pool)
+        ok = false
+        try
+            result = f(conn)
+            ok = true
+            return result
+        finally
+            ok ? checkin!(pool, conn) : discard!(pool, conn)
+        end
+    else
+        database = open_connection()
+        try
+            return f(database)
+        finally
+            close_db(database)
+        end
+    end
+end
+
 function retention_limit()
     raw = get(ENV, "RUN_RETENTION", "5000")
     try
@@ -63,8 +188,7 @@ function max_queued_jobs()
 end
 
 function init_storage!()
-    database = db()
-    try
+    with_connection() do database
         if storage_backend() == :postgres
             DBInterface.execute(database, """
                 CREATE TABLE IF NOT EXISTS benchmark_runs (
@@ -146,8 +270,6 @@ function init_storage!()
         end
         backfill_job_access!(database)
         reset_incomplete_jobs!(database)
-    finally
-        close_db(database)
     end
 end
 
@@ -206,8 +328,7 @@ end
 
 function insert_run!(benchmark_type::String, input_size::String, duration_ms::Real, result_summary::String)
     created_at = utc_timestamp()
-    database = db()
-    try
+    with_connection() do database
         if storage_backend() == :postgres
             DBInterface.execute(
                 database,
@@ -223,9 +344,8 @@ function insert_run!(benchmark_type::String, input_size::String, duration_ms::Re
             )
             prune_old_runs!(database)
         end
-    finally
-        close_db(database)
     end
+    return nothing
 end
 
 function prune_old_runs!(database)
@@ -264,9 +384,8 @@ end
 
 function recent_runs(limit::Int = 20)
     safe_limit = clamp(limit, 1, 100)
-    database = db()
-    rows = Vector{Dict{String, Any}}()
-    try
+    return with_connection() do database
+        rows = Vector{Dict{String, Any}}()
         result = if storage_backend() == :postgres
             DBInterface.execute(
                 database,
@@ -290,45 +409,41 @@ function recent_runs(limit::Int = 20)
                 "created_at" => row.created_at,
             ))
         end
-    finally
-        close_db(database)
+        rows
     end
-    return rows
+end
+
+# Count helper that runs on an already-checked-out connection, so create_job!
+# can enforce the queue cap and insert without a second checkout.
+function active_job_count_conn(database)
+    result = DBInterface.execute(database, "SELECT COUNT(*) AS count FROM benchmark_jobs WHERE status IN ('queued', 'running')")
+    for row in result
+        return Int(row.count)
+    end
+    return 0
 end
 
 function run_count()
-    database = db()
-    try
+    return with_connection() do database
         result = DBInterface.execute(database, "SELECT COUNT(*) AS count FROM benchmark_runs")
         for row in result
             return Int(row.count)
         end
-    finally
-        close_db(database)
+        return 0
     end
-    return 0
 end
 
-function active_job_count()
-    database = db()
-    try
-        result = DBInterface.execute(database, "SELECT COUNT(*) AS count FROM benchmark_jobs WHERE status IN ('queued', 'running')")
-        for row in result
-            return Int(row.count)
-        end
-    finally
-        close_db(database)
-    end
-    return 0
-end
+active_job_count() = with_connection(active_job_count_conn)
 
 function create_job!(benchmark_type::String, input_json::String, input_size::String)
-    active_job_count() < max_queued_jobs() || throw(ArgumentError("Too many benchmark jobs are already queued"))
     created_at = utc_timestamp()
     public_id = new_public_id()
     access_token = new_access_token()
-    database = db()
-    try
+    return with_connection() do database
+        # Enforce the queue cap and insert on the same connection (was two
+        # separate connections).
+        active_job_count_conn(database) < max_queued_jobs() ||
+            throw(ArgumentError("Too many benchmark jobs are already queued"))
         if storage_backend() == :postgres
             result = DBInterface.execute(
                 database,
@@ -349,30 +464,25 @@ function create_job!(benchmark_type::String, input_json::String, input_size::Str
                 return Dict("id" => Int(row.id), "public_id" => public_id, "access_token" => access_token)
             end
         end
-    finally
-        close_db(database)
+        error("Could not create benchmark job")
     end
-    error("Could not create benchmark job")
 end
 
 function mark_job_running!(job_id::Int)
     started_at = utc_timestamp()
-    database = db()
-    try
+    with_connection() do database
         if storage_backend() == :postgres
             DBInterface.execute(database, "UPDATE benchmark_jobs SET status = 'running', started_at = \$1 WHERE id = \$2", (started_at, job_id))
         else
             DBInterface.execute(database, "UPDATE benchmark_jobs SET status = 'running', started_at = ? WHERE id = ?", (started_at, job_id))
         end
-    finally
-        close_db(database)
     end
+    return nothing
 end
 
 function complete_job!(job_id::Int, duration_ms::Real, result_json::String)
     finished_at = utc_timestamp()
-    database = db()
-    try
+    with_connection() do database
         if storage_backend() == :postgres
             DBInterface.execute(
                 database,
@@ -388,16 +498,14 @@ function complete_job!(job_id::Int, duration_ms::Real, result_json::String)
             )
             prune_old_jobs!(database)
         end
-    finally
-        close_db(database)
     end
+    return nothing
 end
 
 function fail_job!(job_id::Int, message::String)
     finished_at = utc_timestamp()
     safe_message = first(message, min(lastindex(message), 600))
-    database = db()
-    try
+    with_connection() do database
         if storage_backend() == :postgres
             DBInterface.execute(
                 database,
@@ -413,9 +521,8 @@ function fail_job!(job_id::Int, message::String)
             )
             prune_old_jobs!(database)
         end
-    finally
-        close_db(database)
     end
+    return nothing
 end
 
 function parse_stored_json(value)
@@ -457,8 +564,7 @@ function job_summary_to_dict(row)
 end
 
 function get_job(public_id::String, access_token::String)
-    database = db()
-    try
+    return with_connection() do database
         result = if storage_backend() == :postgres
             DBInterface.execute(
                 database,
@@ -475,17 +581,14 @@ function get_job(public_id::String, access_token::String)
         for row in result
             return job_to_dict(row)
         end
-    finally
-        close_db(database)
+        return nothing
     end
-    return nothing
 end
 
 function recent_jobs(limit::Int = 20)
     safe_limit = clamp(limit, 1, 100)
-    database = db()
-    rows = Vector{Dict{String, Any}}()
-    try
+    return with_connection() do database
+        rows = Vector{Dict{String, Any}}()
         result = if storage_backend() == :postgres
             DBInterface.execute(
                 database,
@@ -502,8 +605,6 @@ function recent_jobs(limit::Int = 20)
         for row in result
             push!(rows, job_summary_to_dict(row))
         end
-    finally
-        close_db(database)
+        rows
     end
-    return rows
 end

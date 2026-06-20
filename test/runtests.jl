@@ -5,6 +5,12 @@ using JuliaScientificBenchmarkLab
 
 const JSBL = JuliaScientificBenchmarkLab
 
+# A stand-in connection for exercising the pool mechanics without a database.
+mutable struct FakeConn
+    id::Int
+    alive::Bool
+end
+
 # Run `f` against a throwaway SQLite database in a temp dir. DATABASE_URL is
 # forced unset so storage tests never touch a real Postgres (prod) instance,
 # and JULIA_BENCH_DATA_DIR redirects the SQLite file away from ./data.
@@ -155,6 +161,53 @@ end
             fetched = JSBL.get_job(job["public_id"], job["access_token"])
             @test fetched["status"] == "failed"
             @test length(fetched["error"]) <= 600
+        end
+    end
+
+    @testset "pool: reuse, bound, and stale-connection handling" begin
+        counter = Ref(0)
+        closed = Set{Int}()
+        opener = () -> (counter[] += 1; FakeConn(counter[], true))
+        validate = c -> c.alive
+        closer = c -> (push!(closed, c.id); nothing)
+        pool = JSBL.ConnectionPool(opener, validate, closer, 2)
+
+        # First checkout opens a new connection; checkin returns it to the pool;
+        # the next checkout reuses it (validate passes, no new open).
+        c1 = JSBL.checkout!(pool)
+        @test c1.id == 1
+        JSBL.checkin!(pool, c1)
+        c1_again = JSBL.checkout!(pool)
+        @test c1_again === c1
+        @test counter[] == 1
+
+        # A second concurrent checkout opens a distinct connection.
+        c2 = JSBL.checkout!(pool)
+        @test c2.id == 2
+        @test counter[] == 2
+
+        # discard! closes the connection and frees its slot.
+        JSBL.discard!(pool, c2)
+        @test 2 in closed
+
+        # A connection that died while idle fails validation on checkout and is
+        # dropped and replaced with a fresh one.
+        JSBL.checkin!(pool, c1_again)
+        c1_again.alive = false
+        c3 = JSBL.checkout!(pool)
+        @test c3.id == 3
+        @test 1 in closed
+    end
+
+    @testset "pool: DB_POOL_SIZE is clamped" begin
+        withenv("DB_POOL_SIZE" => "999") do
+            @test JSBL.db_pool_size() == 16
+        end
+        withenv("DB_POOL_SIZE" => "0") do
+            @test JSBL.db_pool_size() == 1
+        end
+        withenv("DB_POOL_SIZE" => "junk") do
+            @test JSBL.db_pool_size() == 4
         end
     end
 

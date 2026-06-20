@@ -9,7 +9,7 @@ Julia Scientific Benchmark Lab is a production-oriented Julia web dashboard for 
 - Dark responsive dashboard with benchmark cards, status, quick stats, and recent history.
 - JSON API for health checks, recent runs, and benchmark execution.
 - Benchmarks for dense matrix multiplication, Monte Carlo pi, 2D heat diffusion, random walk, and DataFrame processing.
-- PostgreSQL-backed recent run history, with SQLite fallback for local development.
+- PostgreSQL-backed recent run history (pooled connections), with SQLite fallback for local development.
 - Strict input validation and hard limits to protect the VPS.
 - Nginx reverse proxy with HTTPS via Certbot.
 
@@ -44,6 +44,7 @@ The app reads `/home/micu/julia/.env` through systemd.
 - `RUN_RETENTION=5000`
 - `MAX_CONCURRENT_BENCHMARKS=2`
 - `MAX_QUEUED_JOBS=50`
+- `DB_POOL_SIZE=4` (Postgres connection pool size; 1-16)
 
 Benchmarks run on worker threads, so `JULIA_NUM_THREADS` should exceed the
 number of concurrent benchmarks you want. The app always reserves one thread
