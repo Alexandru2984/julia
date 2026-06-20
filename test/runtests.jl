@@ -1,4 +1,6 @@
 using Test
+using HTTP
+using JSON3
 using JuliaScientificBenchmarkLab
 
 const JSBL = JuliaScientificBenchmarkLab
@@ -195,6 +197,108 @@ end
         end
         withenv("RUN_RETENTION" => "10") do
             @test JSBL.retention_limit() == 100
+        end
+    end
+
+    @testset "http: GET /health returns status and runtime info" begin
+        with_fresh_db() do
+            resp = JSBL.app(HTTP.Request("GET", "/health"))
+            @test resp.status == 200
+            body = JSON3.read(String(resp.body))
+            @test body.status == "ok"
+            @test haskey(body, :threads)
+            @test haskey(body, :max_concurrent_benchmarks)
+        end
+    end
+
+    @testset "http: static assets are served with correct content types" begin
+        resp = JSBL.app(HTTP.Request("GET", "/"))
+        @test resp.status == 200
+        @test occursin("text/html", HTTP.header(resp, "Content-Type"))
+        for (path, ct) in [("/styles.css", "text/css"), ("/app.js", "application/javascript")]
+            r = JSBL.app(HTTP.Request("GET", path))
+            @test r.status == 200
+            @test occursin(ct, HTTP.header(r, "Content-Type"))
+        end
+    end
+
+    @testset "http: unknown route returns 404 JSON" begin
+        resp = JSBL.app(HTTP.Request("GET", "/nope"))
+        @test resp.status == 404
+        @test occursin("application/json", HTTP.header(resp, "Content-Type"))
+    end
+
+    @testset "http: static routing blocks path traversal" begin
+        # Only a fixed allow-list of paths is served statically; anything trying
+        # to escape PUBLIC_DIR falls through to a 404 instead of reading the file.
+        for evil in ["/../src/storage.jl", "/../../etc/passwd", "/..%2f..%2fetc%2fpasswd"]
+            r = JSBL.app(HTTP.Request("GET", evil))
+            @test r.status == 404
+        end
+    end
+
+    @testset "http: invalid benchmark requests return 400" begin
+        with_fresh_db() do
+            missing_field = JSBL.app(HTTP.Request("POST", "/api/benchmark/matrix",
+                ["Content-Type" => "application/json"], "{}"))
+            @test missing_field.status == 400
+            out_of_range = JSBL.app(HTTP.Request("POST", "/api/benchmark/matrix",
+                ["Content-Type" => "application/json"], "{\"n\":99999}"))
+            @test out_of_range.status == 400
+            bad_json = JSBL.app(HTTP.Request("POST", "/api/benchmark/matrix",
+                ["Content-Type" => "application/json"], "not json"))
+            @test bad_json.status == 400
+        end
+    end
+
+    @testset "http: oversized request body is rejected" begin
+        with_fresh_db() do
+            oversized = "{\"n\":" * repeat("0", 5000) * "1}"  # > MAX_BODY_BYTES (4096)
+            r = JSBL.app(HTTP.Request("POST", "/api/benchmark/matrix",
+                ["Content-Type" => "application/json"], oversized))
+            @test r.status == 400
+        end
+    end
+
+    @testset "http: job lookup requires the matching token" begin
+        with_fresh_db() do
+            no_token = JSBL.app(HTTP.Request("GET", "/api/jobs/some-id"))
+            @test no_token.status == 404
+            job = JSBL.create_job!("matrix", "{\"n\":10}", "10x10")
+            ok = JSBL.app(HTTP.Request("GET", "/api/jobs/$(job["public_id"])",
+                ["X-Job-Token" => job["access_token"]]))
+            @test ok.status == 200
+            wrong = JSBL.app(HTTP.Request("GET", "/api/jobs/$(job["public_id"])",
+                ["X-Job-Token" => "wrong-token"]))
+            @test wrong.status == 404
+        end
+    end
+
+    @testset "http: valid benchmark request queues a job (202)" begin
+        with_fresh_db() do
+            resp = JSBL.app(HTTP.Request("POST", "/api/benchmark/matrix",
+                ["Content-Type" => "application/json"], "{\"n\":10}"))
+            @test resp.status == 202
+            body = JSON3.read(String(resp.body))
+            @test haskey(body, :job_id)
+            @test haskey(body, :job_token)
+            @test body.status == "queued"
+            # The handler spawns the benchmark on a worker thread. Wait for it to
+            # finish *inside* this withenv block so its async db() call resolves
+            # the temp data dir, never the restored (production) environment.
+            jid = String(body.job_id)
+            tok = String(body.job_token)
+            finished = false
+            for _ in 1:200
+                job = JSBL.get_job(jid, tok)
+                if job !== nothing && job["status"] in ("done", "failed")
+                    finished = true
+                    @test job["status"] == "done"
+                    break
+                end
+                sleep(0.05)
+            end
+            @test finished
         end
     end
 end
