@@ -1,5 +1,7 @@
 # Julia Scientific Benchmark Lab
 
+![CI](https://github.com/Alexandru2984/julia/actions/workflows/ci.yml/badge.svg)
+
 Julia Scientific Benchmark Lab is a production-oriented Julia web dashboard for small scientific-computing demos, numerical simulations, and benchmark runs.
 
 ## Features
@@ -43,6 +45,14 @@ The app reads `/home/micu/julia/.env` through systemd.
 - `MAX_CONCURRENT_BENCHMARKS=2`
 - `MAX_QUEUED_JOBS=50`
 
+Benchmarks run on worker threads, so `JULIA_NUM_THREADS` should exceed the
+number of concurrent benchmarks you want. The app always reserves one thread
+for the HTTP event loop: effective benchmark concurrency is
+`min(MAX_CONCURRENT_BENCHMARKS, JULIA_NUM_THREADS - 1)`. With the default
+2 threads, one benchmark runs at a time; set `JULIA_NUM_THREADS=3` to allow two
+while keeping `/health` and job polling responsive. `GET /health` reports the
+effective and configured limits plus the thread count.
+
 `.env` is intentionally ignored by Git.
 Keep it owner-readable only:
 
@@ -77,8 +87,11 @@ Or via the package test target: `Pkg.test("JuliaScientificBenchmarkLab")`.
 - Heat diffusion: `grid` from 10 to 160, `steps` from 1 to 500.
 - Random walk: `steps` from 10 to 100,000.
 - DataFrame processing: `rows` from 1,000 to 750,000.
-- Nginx rate limits benchmark API calls.
-- The Julia process allows only a small number of concurrent benchmark runs.
+- Nginx rate limits benchmark API calls, and rejects requests that do not
+  arrive through Cloudflare (origin guard).
+- The Julia process allows only a small number of concurrent benchmark runs,
+  always reserving one thread for the HTTP event loop so heavy benchmarks
+  cannot starve health checks and job polling.
 - Benchmark requests are queued as jobs and polled by the frontend.
 - Nginx request body size is limited to 16 KB.
 - The Julia app rejects request bodies over 4 KB.
